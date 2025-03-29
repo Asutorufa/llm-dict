@@ -20,23 +20,19 @@ var SystemZh = `
 - 如果用户输入的为单个词，那么只需要对这个词进行详细解析即可。
 - 尽量注明翻译的来源，如某词典，并使用那些更具有权威的来源。
 - 在可能的情况下，还需要使用原始语言来进行解释。
-- 当你完成解释后，你需要调用printExplain来对解释进行打印。
-- 你只需要输出printExplain的函数调用即可。
+- 因为不同语言之间对单词词性的定义不同，所以单词词性你必须使用原始语言。
+- 你必须先调用searchWord来获取句子中每个单词的解释。
+- 使用searchWord获取到的解析来完成内容的分析，并使用通俗易懂的解释来进行翻译。
+- 你只能输出函数调用和解释，不能输出其他无关内容。
 
-## 当你使用函数调用时，你需要以以下格式返回结果
+## 当你使用Tools时，你需要以以下格式进行调用
 
 <function-name>
 </function-name>
 
-如:
-
-<printExplain>
-{"full_explanation":"xxx","words_explanation":[{"word":"aaa","explanation":"a","part_of_speech":"名词"}]}
-</printExplain>
-
 ## 你可以使用以下工具
 
-` + jsonStr(printExplain)
+` + toolsString(searchWord)
 
 func jsonStr(a any) string {
 	data, _ := json.Marshal(a)
@@ -44,29 +40,15 @@ func jsonStr(a any) string {
 	return string(data)
 }
 
-type printExplainResponse struct {
-	FullExplanation  string `json:"full_explanation,omitempty"`
-	WordsExplanation []Word `json:"words_explanation,omitempty"`
-}
-
-func (p printExplainResponse) String() string {
+func toolsString(tools ...openai.ChatCompletionToolParam) string {
 	var str strings.Builder
-
-	fmt.Fprint(&str, p.FullExplanation)
-	str.WriteString("\n")
-
-	for _, v := range p.WordsExplanation {
-		fmt.Fprintf(&str, "%s %s\n", v.Word, v.PartOfSpeech)
-		fmt.Fprintf(&str, "  %s\n", v.Explanation)
+	for _, v := range tools {
+		fmt.Fprintf(&str, "<%s>\n", v.Function.Value.Name.Value)
+		str.WriteString(jsonStr(v))
+		fmt.Fprintf(&str, "\n</%s>\n", v.Function.Value.Name.Value)
 	}
 
 	return str.String()
-}
-
-type Word struct {
-	Explanation  string `json:"explanation,omitempty"`
-	PartOfSpeech string `json:"part_of_speech,omitempty"`
-	Word         string `json:"word,omitempty"`
 }
 
 var printExplain = openai.ChatCompletionToolParam{
@@ -82,9 +64,9 @@ var printExplain = openai.ChatCompletionToolParam{
 					"description": "The full explanation of original text.",
 				},
 				"words_explanation": map[string]any{
-					"type":        "array<object>",
+					"type":        "array",
 					"description": "Detailed explanation of each word in the text.",
-					"properties": map[string]any{
+					"item": map[string]any{
 						"type":     "object",
 						"required": []string{"word", "explanation"},
 						"word": map[string]any{
@@ -113,6 +95,31 @@ var printExplain = openai.ChatCompletionToolParam{
 	}),
 }
 
+var searchWord = openai.ChatCompletionToolParam{
+	Type: openai.F(openai.ChatCompletionToolTypeFunction),
+	Function: openai.F(openai.FunctionDefinitionParam{
+		Name:        openai.F("searchWord"),
+		Description: openai.F("search one word explain"),
+		Parameters: openai.F(shared.FunctionParameters{
+			"type": "object",
+			"properties": shared.FunctionParameters{
+				"language": map[string]any{
+					"type":        "string",
+					"description": "The language of original text.",
+					"enum":        []string{"en", "ja"},
+				},
+				"word": map[string]any{
+					"type":        "string",
+					"description": "Original word.",
+				},
+			},
+			"required":             []string{"language", "word"},
+			"additionalProperties": false,
+			"strict":               true,
+		}),
+	}),
+}
+
 type parseStatus int
 
 var (
@@ -127,10 +134,12 @@ type toolsParser struct {
 	current string
 
 	body  string
-	tools map[string]string
+	tools map[string][]string
 }
 
 func (t *toolsParser) parseTools(b string) string {
+	// os.Stdout.WriteString(b)
+
 	z := ""
 	for _, v := range b {
 		if t.status == needStartStart {
@@ -164,8 +173,9 @@ func (t *toolsParser) parseTools(b string) string {
 
 		if t.status == needEndEnd {
 			if v == '>' {
-				t.tools[t.current] = t.body
+				t.tools[t.current] = append(t.tools[t.current], t.body)
 				t.status = needStartStart
+				t.body = ""
 			}
 
 			continue

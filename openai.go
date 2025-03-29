@@ -31,30 +31,59 @@ func NewLLM(baseurl string, apiKeys string, model string) *LLM {
 }
 
 func (llm *LLM) Chat(ctx context.Context, prompt string, w io.Writer) error {
-	ss := llm.client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
-		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(SystemZh),
-			openai.UserMessage(prompt),
-		}),
-		Model: openai.F(llm.model),
-	})
-
-	tp := toolsParser{
-		tools: map[string]string{},
+	msgs := []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage(SystemZh),
+		openai.UserMessage(prompt),
 	}
 
-	for ss.Next() {
-		_, _ = w.Write([]byte(tp.parseTools(ss.Current().Choices[0].Delta.Content)))
+	for {
+		fmt.Println("--------- history ---------")
+		json.NewEncoder(w).Encode(msgs)
+		fmt.Println("--------- history ---------")
+
+		ss := llm.client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
+			Messages: openai.F(msgs),
+			Model:    openai.F(llm.model),
+		})
+
+		tp := toolsParser{
+			tools: map[string][]string{},
+		}
+
+		for ss.Next() {
+			_, _ = w.Write([]byte(tp.parseTools(ss.Current().Choices[0].Delta.Content)))
+		}
+
+		if len(tp.tools) == 0 {
+			return nil
+		}
+
+		for k, v := range tp.tools {
+			switch k {
+			case "searchWord":
+				searchWordTool := searchWordTool{}
+
+				for _, one := range v {
+					resp, err := searchWordTool.Call(ctx, one)
+					if err != nil {
+						resp = err.Error()
+					}
+
+					msgs = append(msgs, openai.ToolMessage("searchWord", one))
+					msgs = append(msgs, openai.FunctionMessage("searchWord", resp))
+				}
+
+			case "printExplain":
+				printExplainTool := printExplainTool{}
+
+				for _, one := range v {
+					_, _ = printExplainTool.Call(ctx, one)
+				}
+
+				return nil
+			}
+		}
 	}
-
-	if x := tp.tools["printExplain"]; x != "" {
-		var calls printExplainResponse
-		_ = json.Unmarshal([]byte(x), &calls)
-
-		fmt.Println(calls.String())
-	}
-
-	return ss.Err()
 }
 
 func init() {
